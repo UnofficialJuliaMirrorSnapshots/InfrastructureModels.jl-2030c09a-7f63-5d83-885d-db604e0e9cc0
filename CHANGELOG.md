@@ -4,6 +4,13 @@ InfrastructureModels.jl Change Log
 ### Staged
 - nothing
 
+### v0.3.0
+- Added @def macro
+- Added automatic export, #44 (breaking)
+- Added tools for working with time_series blocks
+- Added fixed variants of on/off constraints
+- Made global_keys required by replicate, #25 (breaking)
+
 ### v0.2.2
 - Fixed bug by adding Memento. quantifier to all logging statements
 

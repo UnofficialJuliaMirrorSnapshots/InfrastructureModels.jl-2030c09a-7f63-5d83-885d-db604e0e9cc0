@@ -1,13 +1,11 @@
-export update_data!
-
 "recursively applies new_data to data, overwriting information"
 function update_data!(data::Dict{String,<:Any}, new_data::Dict{String,<:Any})
     if haskey(data, "per_unit") && haskey(new_data, "per_unit")
         if data["per_unit"] != new_data["per_unit"]
-            Memento.error(LOGGER, "update_data requires datasets in the same units, try make_per_unit and make_mixed_units")
+            Memento.error(_LOGGER, "update_data requires datasets in the same units, try make_per_unit and make_mixed_units")
         end
     else
-        Memento.warn(LOGGER, "running update_data with data that does not include per_unit field, units may be incorrect")
+        Memento.warn(_LOGGER, "running update_data with data that does not include per_unit field, units may be incorrect")
     end
     _update_data!(data, new_data)
 end
@@ -33,21 +31,10 @@ end
 ismultinetwork(data::Dict{String,<:Any}) = (haskey(data, "multinetwork") && data["multinetwork"] == true)
 
 "Transforms a single network into a multinetwork with several deepcopies of the original network"
-function replicate(sn_data::Dict{String,<:Any}, count::Int; global_keys::Set{String} = Set{String}())
+function replicate(sn_data::Dict{String,<:Any}, count::Int, global_keys::Set{String})
     @assert count > 0
     if ismultinetwork(sn_data)
-        Memento.error(LOGGER, "replicate can only be used on single networks")
-    end
-
-    if length(global_keys) <= 0
-        Memento.warn(LOGGER, "deprecation warning, calls to replicate should explicitly specify a set of global_keys")
-        # old default
-        for (k,v) in sn_data
-             if !(typeof(v) <: Dict)
-                Memento.warn(LOGGER, "adding global key $(k)")
-                push!(global_keys, k)
-             end
-        end
+        Memento.error(_LOGGER, "replicate can only be used on single networks")
     end
 
     name = get(sn_data, "name", "anonymous")
@@ -78,6 +65,82 @@ function replicate(sn_data::Dict{String,<:Any}, count::Int; global_keys::Set{Str
 end
 
 
+"turns a single network and a time_series data block into a multi-network"
+function make_multinetwork(data::Dict{String, <:Any}, global_keys::Set{String})
+    if InfrastructureModels.ismultinetwork(data)
+        Memento.error(_LOGGER, "make_multinetwork does not support multinetwork data")
+    end
+
+    if !haskey(data, "time_series")
+        Memento.error(_LOGGER, "make_multinetwork requires time_series data")
+    end
+
+    steps = data["time_series"]["num_steps"]
+    if !isa(steps, Int)
+        Memento.error(_LOGGER, "the value of num_steps should be an integer, given $(steps)")
+    end
+
+    mn_data = replicate(data, steps, union(global_keys, Set(["time_series"])))
+    time_series = pop!(mn_data, "time_series")
+
+    for i in 1:steps
+        nw_data = mn_data["nw"]["$(i)"]
+        for (k,v) in time_series
+            if isa(v, Dict) && haskey(nw_data, k)
+                #println(k); println(v)
+                _update_data_timepoint!(nw_data[k], v, i)
+            end
+        end
+    end
+
+    return mn_data
+end
+
+
+"loads a single time point from a time_series data block into the current network"
+function load_timepoint!(data::Dict{String, <:Any}, step_index::Int)
+    if InfrastructureModels.ismultinetwork(data)
+        Memento.error(_LOGGER, "load_timepoint! does not support multinetwork data")
+    end
+
+    if !haskey(data, "time_series")
+        Memento.error(_LOGGER, "load_timepoint! requires time_series data")
+    end
+
+    if step_index < 1 || step_index > data["time_series"]["num_steps"]
+        Memento.error(_LOGGER, "a step index of $(step_index) is outside the valid range of 1:$(data["time_series"]["num_steps"])")
+    end
+
+    for (k,v) in data["time_series"]
+        if isa(v, Dict) && haskey(data, k)
+            _update_data_timepoint!(data[k], v, step_index)
+        end
+    end
+
+    data["step_index"] = step_index
+
+    return
+end
+
+"recursive call of _update_data"
+function _update_data_timepoint!(data::Dict{String, <:Any}, new_data::Dict{String, <:Any}, step::Int)
+    for (key, new_v) in new_data
+        if haskey(data, key)
+            v = data[key]
+            if isa(v, Dict) && isa(new_v, Dict)
+                _update_data_timepoint!(v, new_v, step)
+            elseif (!isa(v, Dict) || !isa(v, Array)) && isa(new_v, Array)
+                data[key] = new_v[step]
+            else
+                Memento.warn(_LOGGER, "skipping key $(key) because object types do not match, target $(typeof(v)) source $(typeof(new_v))")
+            end
+        else
+            Memento.warn(_LOGGER, "skipping time_series key $(key) because it does not occur in the target data")
+        end
+    end
+end
+
+
 
 "builds a table of component data"
 function component_table(data::Dict{String,<:Any}, component::String, fields::Vector{String})
@@ -92,7 +155,7 @@ component_table(data::Dict{String,<:Any}, component::String, field::String) = co
 function _component_table(data::Dict{String,<:Any}, component::String, fields::Vector{String})
     comps = data[component]
     if !_iscomponentdict(comps)
-        Memento.error(LOGGER, "$(component) does not appear to refer to a component list")
+        Memento.error(_LOGGER, "$(component) does not appear to refer to a component list")
     end
 
     items = []
@@ -130,7 +193,7 @@ function summary(io::IO, data::Dict{String,<:Any};
     )
 
     if ismultinetwork(data)
-        Memento.error(LOGGER, "summary does not yet support multinetwork data")
+        Memento.error(_LOGGER, "summary does not yet support multinetwork data")
     end
 
     component_types = []
@@ -326,7 +389,7 @@ function compare_dict(d1, d2)
         v2 = d2[k1]
 
         if isa(v1, Number)
-            if !compare_numbers(v1, v2)
+            if !_compare_numbers(v1, v2)
                 return false
             end
         elseif isa(v1, Array)
@@ -335,7 +398,7 @@ function compare_dict(d1, d2)
             end
             for i in 1:length(v1)
                 if isa(v1[i], Number)
-                    if !compare_numbers(v1[i], v2[i])
+                    if !_compare_numbers(v1[i], v2[i])
                         return false
                     end
                 else
@@ -366,7 +429,7 @@ function Base.isapprox(a::Any, b::Any; kwargs...)
 end
 
 "tests if two numbers are equal, up to floating point precision"
-function compare_numbers(v1, v2)
+function _compare_numbers(v1, v2)
     if isnan(v1)
         #println("1.1")
         if !isnan(v2)
